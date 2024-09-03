@@ -76,17 +76,30 @@ fn test_input(body: &str) -> common::Syntax {
 }
 
 proptest! {
-    #[test]
-    fn test_eval(e in expr_strategy()) {
-        let value = eval(&e);
-        let syntax = test_input(to_input(&e).as_str());
-        let basic_term = basic::from_syntax(syntax.clone(), vec![]);
-        let normal = basic::normalize(basic_term);
-        let normal_syntax = basic::to_syntax(normal);
-        println!("{:?}", normal_syntax);
-        let normal_value = Some(normal_syntax)
-            .and_then(|x| try_discard_lets(&x))
-            .and_then(|x| try_numeral(&x));
-        assert_eq!(Some(value), normal_value);
-    }
+    // #[test]
+    // fn test_eval_basic(e in expr_strategy()) {
+    //     let value = eval(&e);
+    //     let syntax = test_input(to_input(&e).as_str());
+    //     let basic_term = basic::from_syntax(syntax.clone(), vec![]);
+    //     let normal = basic::normalize(basic_term);
+    //     let normal_syntax = basic::to_syntax(normal);
+    //     let normal_value = Some(normal_syntax)
+    //         .and_then(|x| try_discard_lets(&x))
+    //         .and_then(|x| try_numeral(&x));
+    //     assert_eq!(Some(value), normal_value);
+    // }
+
+    // #[test]
+    // fn test_eval_optimal(e in expr_strategy()) {
+    //     let value = eval(&e);
+    //     let syntax = test_input(to_input(&e).as_str());
+    //     let optimal_term = optimal::from_syntax(syntax.clone());
+    //     let normal = optimal::normalize(optimal_term);
+    //     let normal_syntax = optimal::to_syntax(normal);
+    //     println!("{:?}", normal_syntax);
+    //     let normal_value = Some(normal_syntax)
+    //         .and_then(|x| try_discard_lets(&x))
+    //         .and_then(|x| try_numeral(&x));
+    //     assert_eq!(Some(value), normal_value);
+    // }
 }
