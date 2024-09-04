@@ -104,7 +104,7 @@ macro_rules! make_benchmark {
             //     rec::normalize(i.clone())
             // }));
             group.bench_with_input(BenchmarkId::new("Optimal", $test), &optimal_term, |b, i| b.iter(|| {
-                optimal::normalize(i.clone())
+                optimal::normalize(i.clone(), None)
             }));
             // Will usually crash on high memory tests
             // group.bench_with_input(BenchmarkId::new("NoGc", $test), &nogc_term, |b, i| b.iter(|| {

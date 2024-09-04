@@ -352,6 +352,10 @@ impl Wire {
         matches!(self.kind(), Root | Lam | Def | Apply)
     }
 
+    unsafe fn is_lam_bind(&self) -> bool {
+        self.kind() == Kind::Lam && self.port() == kind::lam::BIND
+    }
+
     #[inline]
     unsafe fn active(&self) -> bool {
         let other = self.flip();
@@ -360,13 +364,13 @@ impl Wire {
         {
             false
         } else {
-            let non_principal_eraser =
-                (self.kind() == Kind::Erase && !other.structural())
-                || (other.kind() == Kind::Erase && !other.structural());
+            let non_bound_eraser =
+                (self.kind() == Kind::Erase && !other.is_lam_bind())
+                || (other.kind() == Kind::Erase && !self.is_lam_bind());
             let principal_pairs =
                 self.port() == kind::PRINCIPAL
                 && other.port() == kind::PRINCIPAL;
-            non_principal_eraser || principal_pairs
+            non_bound_eraser || principal_pairs
         }
     }
 
@@ -654,7 +658,6 @@ pub fn to_syntax(agent: Wire) -> Syntax {
         }
     }
     unsafe fn inner(wire: Wire, supply: &mut usize, context: &mut HashMap<usize, String>) -> Syntax {
-        println!("{}", to_dot());
         stacker::maybe_grow(32 * KB, 4 * MB, || {
             inner_helper(wire, supply, context)
         }) 
@@ -733,18 +736,48 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
     match other.kind() {
         Kind::Null => todo!(),
         Kind::Root => todo!(),
-        Kind::Lam => todo!(),
+        Kind::Lam => {
+            let (top_copies, bot_copies) = commute_general(eraser, other);
+            result.extend(top_copies);
+            result.extend(bot_copies);
+        }
         Kind::Def => todo!(),
-        Kind::Apply => todo!(),
-        Kind::Dup => {
+        Kind::Apply => {
             match other.port() {
-                kind::dup::INPUT => {
+                kind::apply::ARGUMENT => {
                     let eraser2 = Wire::alloc(Kind::Erase).with(kind::PRINCIPAL);
-                    eraser.connect(other.with(kind::dup::AUX1));
-                    eraser2.connect(other.with(kind::dup::AUX2));
+                    let root = other.with(kind::apply::ROOT).flip();
+                    let fun = other.with(kind::apply::FUNCTION).flip();
+                    eraser2.connect(root);
+                    eraser.connect(fun);
                     other.delete();
                     result.push(eraser);
                     result.push(eraser2);
+                }
+                kind::apply::FUNCTION => {
+                    let (top_copies, bot_copies) = commute_general(eraser, other);
+                    result.extend(top_copies);
+                    result.extend(bot_copies);
+                }
+                kind::apply::ROOT => {
+                    let eraser2 = Wire::alloc(Kind::Erase).with(kind::PRINCIPAL);
+                    let arg = other.with(kind::apply::ARGUMENT).flip();
+                    let fun = other.with(kind::apply::FUNCTION).flip();
+                    eraser2.connect(arg);
+                    eraser.connect(fun);
+                    other.delete();
+                    result.push(eraser);
+                    result.push(eraser2);
+                }
+                _ => unreachable!()
+            }
+        }
+        Kind::Dup => {
+            match other.port() {
+                kind::dup::INPUT => {
+                    let (top_copies, bot_copies) = commute_general(eraser, other);
+                    result.extend(top_copies);
+                    result.extend(bot_copies);
                 }
                 kind::dup::AUX1 => {
                     let input = other.with(kind::dup::INPUT).flip();
@@ -866,7 +899,7 @@ unsafe fn annihilate(wire1: Wire, wire2: Wire) {
     let kind = wire1.kind();
     let iter = kind.auxiliary_ports()
         .iter()
-        .zip(kind.auxiliary_ports().iter().rev());
+        .zip(kind.auxiliary_ports().iter());
     for (&top, &bot) in iter {
         let top = wire1.with(top).flip();
         let bot = wire2.with(bot).flip();
@@ -893,14 +926,15 @@ unsafe fn active(wire: Wire) -> Vec<Wire> {
     active
 }
 
-unsafe fn reduce(wire: Wire) {
+unsafe fn reduce(wire: Wire, mut gas: Option<usize>) {
     let mut active = active(wire);
     while let Some(wire) = active.pop() {
-        let wire = wire.with(kind::PRINCIPAL);
         if !wire.active() || !wire.alive() { continue; }
-        // dbg!(wire.agent());
-        // dbg!(heap());
-        println!("{}", to_dot());
+        if gas.is_some() && gas.unwrap() == 0 { break; }
+        gas = gas.map(|g| g - 1);
+        // dbg!((wire.kind(), wire.agent(), wire.port()));
+        // dbg!((wire.flip().kind(), wire.flip().agent(), wire.flip().port()));
+        // println!("{}", to_dot());
         match (wire.kind(), wire.flip().kind()) {
             | (Kind::Apply, Kind::Lam)
             | (Kind::Lam, Kind::Apply) => { 
@@ -937,9 +971,9 @@ unsafe fn reduce(wire: Wire) {
     }
 }
 
-pub fn normalize(agent: Wire) -> Wire {
+pub fn normalize(agent: Wire, gas: Option<usize>) -> Wire {
     unsafe {
-        reduce(agent);
+        reduce(agent, gas);
         agent
     }
 }
@@ -953,6 +987,7 @@ pub fn normalize(agent: Wire) -> Wire {
 //             init();
 //             let var_x = "x".to_string();
 //             let var_y = "y".to_string();
+//             let var_z = "z".to_string();
 //             let id_syntax = Syntax::Abs(var_x.clone(), Syntax::Var(var_x.clone()).boxed()).boxed();
 //             let delta_syntax = Syntax::Abs(var_x.clone(),
 //                 Syntax::App(
@@ -969,13 +1004,19 @@ pub fn normalize(agent: Wire) -> Wire {
 //                     ).boxed()
 //                 ).boxed()
 //             ).boxed();
+//             let simple_let = Syntax::Let(var_z.clone(), delta_syntax.clone(),
+//                 Syntax::App(
+//                     Syntax::Var(var_z.clone()).boxed(),
+//                     id_syntax.clone()
+//                 ).boxed()
+//             ).boxed();
 
-//             let agent = from_syntax(*one);
-//             let agent = normalize(agent);
+//             let agent = from_syntax(*simple_let);
+//             let agent = normalize(agent, None);
 //             dbg!(heap());
 //             println!("{}", to_dot());
-//             let normal_syntax = to_syntax(agent);
-//             dbg!(normal_syntax);
+//             //let normal_syntax = to_syntax(agent);
+//             //dbg!(normal_syntax);
 //         }
 //     }
 // }
