@@ -327,6 +327,7 @@ impl Wire {
 
     #[inline]
     unsafe fn delete(&self) {
+        *heap().get_mut(self.agent()) = Node::new_null();
         heap().delete(self.agent());
     }
 
@@ -339,6 +340,35 @@ impl Wire {
         let node = heap().get_mut(self.agent());
         node.set_agent(port, data as _);
         node.set_port(port, other_port as _);
+    }
+
+    unsafe fn scope_level(&self) -> Option<usize> {
+        match self.kind() {
+            Kind::Scope => Some(self.load(kind::scope::LEVEL) as _),
+            Kind::Dup => Some(self.load(kind::dup::LEVEL) as _),
+            _ => None
+        }
+    }
+
+    unsafe fn set_scope_level(&self, level: usize) {
+        match self.kind() {
+            Kind::Scope => self.store(kind::scope::LEVEL, 0, level),
+            Kind::Dup => self.store(kind::dup::LEVEL, 0, level),
+            _ => { }
+        }
+    }
+
+    unsafe fn repetition_count(&self) -> Option<usize> {
+        match self.kind() {
+            Kind::Scope => Some(self.load(kind::scope::VALUE) as _),
+            _ => None
+        }
+    }
+
+    unsafe fn set_repetition_count(&self, value: usize) {
+        if self.kind() == Kind::Scope { 
+            self.store(kind::scope::VALUE, 0, value)
+        }
     }
 
     unsafe fn flip(&self) -> Wire {
@@ -364,13 +394,12 @@ impl Wire {
         {
             false
         } else {
-            let non_bound_eraser =
-                (self.kind() == Kind::Erase && !other.is_lam_bind())
-                || (other.kind() == Kind::Erase && !self.is_lam_bind());
+            let eraser_opt =
+                (self.kind() == Kind::Erase && !other.structural())
+                || (other.kind() == Kind::Erase && !self.structural());
             let principal_pairs =
-                self.port() == kind::PRINCIPAL
-                && other.port() == kind::PRINCIPAL;
-            non_bound_eraser || principal_pairs
+                self.port() == kind::PRINCIPAL && other.port() == kind::PRINCIPAL;
+            eraser_opt || principal_pairs
         }
     }
 
@@ -382,6 +411,7 @@ impl Wire {
     #[inline]
     unsafe fn alive(&self) -> bool {
         !heap().free.contains(&self.agent())
+        && self.kind() != Kind::Null
     }
 
     unsafe fn increment_scope_level(&self, other: Wire) {
@@ -476,6 +506,7 @@ pub fn from_syntax(syntax: Syntax) -> Wire {
         }
     }
     fn inner(syntax: Syntax, root: Wire, bound: &mut Vec<(String, Vec<Wire>)>) -> Wire {
+        dbg!("from_syntax");
         stacker::maybe_grow(32 * KB, 4 * MB, || {
             inner_helper(syntax, root, bound)
         }) 
@@ -503,11 +534,11 @@ pub fn from_syntax(syntax: Syntax) -> Wire {
                         var.with(kind::null::PRINCIPAL)
                     } else {
                         let var = Wire::alloc(Kind::Scope);
-                        var.store(kind::scope::INPUT, root.port(), root.agent());
+                        var.store(kind::scope::BODY, root.port(), root.agent());
                         var.store(kind::scope::LEVEL, 0, 0);
                         var.store(kind::scope::VALUE, 0, (index - 1) as _);
-                        vars.push(var.with(kind::scope::BODY));
-                        var.with(kind::scope::INPUT)
+                        vars.push(var.with(kind::scope::INPUT));
+                        var.with(kind::scope::BODY)
                     }
                 }
                 Syntax::Abs(name, body) => {
@@ -542,83 +573,88 @@ pub fn from_syntax(syntax: Syntax) -> Wire {
     }
 }
 
-pub unsafe fn to_dot() -> String {
-    unsafe fn dot_metadata(port: usize, wire: Wire) -> String {
-        let (id, attr) = match wire.kind() {
-            Kind::Null => todo!(),
-            Kind::Root => {
-                let id = "r".to_string();
-                let attr = "s";
-                (id, attr)
-            }
-            Kind::Lam => {
-                let id = "l".to_string();
-                let attr = match port {
-                    kind::lam::ROOT => "n",
-                    kind::lam::BODY => "se",
-                    kind::lam::BIND => "sw",
-                    _ => unreachable!()
-                };
-                (id, attr)
-            }
-            Kind::Def => todo!(),
-            Kind::Apply => {
-                let id = "a".to_string();
-                let attr = match port {
-                    kind::apply::ROOT => "n",
-                    kind::apply::FUNCTION => "sw",
-                    kind::apply::ARGUMENT => "se",
-                    _ => unreachable!()
-                };
-                (id, attr)
-            }
-            Kind::Dup => {
-                let level = wire.load(kind::dup::LEVEL);
-                let id = format!("d{}", level);
-                let attr = match port {
-                    kind::dup::INPUT => "n",
-                    kind::dup::AUX1 => "sw",
-                    kind::dup::AUX2 => "se",
-                    _ => unreachable!()
-                };
-                (id, attr)
-            }
-            Kind::Scope => {
-                let level = wire.load(kind::scope::LEVEL);
-                let value = wire.load(kind::scope::VALUE);
-                let id = format!("s{}v{}", level, value);
-                let attr = match port {
-                    kind::scope::INPUT => "n",
-                    kind::scope::BODY => "s",
-                    _ => unreachable!()
-                };
-                (id, attr)
-            }
-            Kind::Erase => {
-                let id = "e".to_string();
-                let attr = match port {
-                    kind::PRINCIPAL => "s",
-                    _ => unreachable!()
-                };
-                (id, attr)
-            }
-        };
-        format!("g{}{}:{}", wire.agent(), id, attr)
-    }
+unsafe fn dot_metadata(wire: Wire) -> String {
+    let (id, attr) = match wire.kind() {
+        Kind::Null => todo!(),
+        Kind::Root => {
+            let id = "r".to_string();
+            let attr = "s";
+            (id, attr)
+        }
+        Kind::Lam => {
+            let id = "l".to_string();
+            let attr = match wire.port() {
+                kind::lam::ROOT => "n",
+                kind::lam::BODY => "se",
+                kind::lam::BIND => "sw",
+                _ => unreachable!()
+            };
+            (id, attr)
+        }
+        Kind::Def => todo!(),
+        Kind::Apply => {
+            let id = "a".to_string();
+            let attr = match wire.port() {
+                kind::apply::ROOT => "n",
+                kind::apply::FUNCTION => "sw",
+                kind::apply::ARGUMENT => "se",
+                _ => unreachable!()
+            };
+            (id, attr)
+        }
+        Kind::Dup => {
+            let level = wire.load(kind::dup::LEVEL);
+            let id = format!("d{}", level);
+            let attr = match wire.port() {
+                kind::dup::INPUT => "n",
+                kind::dup::AUX1 => "sw",
+                kind::dup::AUX2 => "se",
+                _ => unreachable!()
+            };
+            (id, attr)
+        }
+        Kind::Scope => {
+            let level = wire.load(kind::scope::LEVEL);
+            let value = wire.load(kind::scope::VALUE);
+            let id = format!("s{}v{}", level, value);
+            let attr = match wire.port() {
+                kind::scope::INPUT => "n",
+                kind::scope::BODY => "s",
+                _ => unreachable!()
+            };
+            (id, attr)
+        }
+        Kind::Erase => {
+            let id = "e".to_string();
+            let attr = match wire.port() {
+                kind::PRINCIPAL => "s",
+                _ => unreachable!()
+            };
+            (id, attr)
+        }
+    };
+    format!("g{}{}:{}", wire.agent(), id, attr)
+}
+
+
+
+pub unsafe fn to_dot(start: Wire, length: usize) -> String {
     let mut result = "".to_string();
     let mut duplicate = HashSet::new();
-    for index in heap().iter() {
-        let agent = Wire(index as u32);
-        for port in agent.kind().ports() {
-            let other = agent.with(*port).flip();
-            let lhs = dot_metadata(*port, agent);
-            let rhs = dot_metadata(other.port(), other);
+    let mut traverse = vec![(start, 0)];
+    while let Some((wire, dist)) = traverse.pop() {
+        if dist >= length { continue }
+        for &port in wire.kind().ports() {
+            let other = wire.with(port).flip();
+            let lhs = dot_metadata(wire.with(port));
+            let rhs = dot_metadata(other);
             if !duplicate.contains(&(lhs.clone(), rhs.clone())) {
                 let edge = format!("    {} -- {}\n", lhs.clone(), rhs.clone());
                 result.push_str(edge.as_str());
                 duplicate.insert((lhs.clone(), rhs.clone()));
                 duplicate.insert((rhs.clone(), lhs.clone()));
             }
+            traverse.push((wire.with(port).flip(), dist + 1));
         }
     }
     format!("graph {{\n{}}}", result)
@@ -736,11 +772,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
     match other.kind() {
         Kind::Null => todo!(),
         Kind::Root => todo!(),
-        Kind::Lam => {
-            let (top_copies, bot_copies) = commute_general(eraser, other);
-            result.extend(top_copies);
-            result.extend(bot_copies);
-        }
+        Kind::Lam => todo!(),
         Kind::Def => todo!(),
         Kind::Apply => {
             match other.port() {
@@ -754,11 +786,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
                     result.push(eraser);
                     result.push(eraser2);
                 }
-                kind::apply::FUNCTION => {
-                    let (top_copies, bot_copies) = commute_general(eraser, other);
-                    result.extend(top_copies);
-                    result.extend(bot_copies);
-                }
+                kind::apply::FUNCTION => unreachable!(),
                 kind::apply::ROOT => {
                     let eraser2 = Wire::alloc(Kind::Erase).with(kind::PRINCIPAL);
                     let arg = other.with(kind::apply::ARGUMENT).flip();
@@ -774,17 +802,13 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
         }
         Kind::Dup => {
             match other.port() {
-                kind::dup::INPUT => {
-                    let (top_copies, bot_copies) = commute_general(eraser, other);
-                    result.extend(top_copies);
-                    result.extend(bot_copies);
-                }
+                kind::dup::INPUT => unreachable!(),
                 kind::dup::AUX1 => {
                     let input = other.with(kind::dup::INPUT).flip();
                     let aux2 = other.with(kind::dup::AUX2).flip();
                     input.connect(aux2);
                     eraser.delete();
-                    input.delete();
+                    other.delete();
                     result.push(input);
                     result.push(aux2);
                 }
@@ -793,7 +817,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
                     let aux1 = other.with(kind::dup::AUX1).flip();
                     input.connect(aux1);
                     eraser.delete();
-                    input.delete();
+                    other.delete();
                     result.push(input);
                     result.push(aux1);
                 }
@@ -802,12 +826,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
         }
         Kind::Scope => {
             match other.port() {
-                kind::scope::INPUT => {
-                    let other = other.with(kind::scope::BODY);
-                    eraser.connect(other.flip());
-                    other.delete();
-                    result.push(eraser);
-                }
+                kind::scope::INPUT => unreachable!(),
                 kind::scope::BODY => {
                     let other = other.with(kind::scope::INPUT);
                     eraser.connect(other.flip());
@@ -817,10 +836,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
                 _ => unreachable!()
             }
         }
-        Kind::Erase => {
-            eraser.delete();
-            other.delete();
-        }
+        Kind::Erase => unreachable!()
     }
     result
 }
@@ -843,6 +859,7 @@ unsafe fn commute_root(root: Wire, other: Wire) -> (Vec<Wire>, Vec<Wire>) {
 }
 
 unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
+    let mut loops = vec![];
     let top_kind = top.kind();
     let bot_kind = bot.kind();
     let top_ports = top_kind.auxiliary_ports();
@@ -851,8 +868,13 @@ unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
     let top_copies: Vec<_> = bot_ports.iter()
         .map(|&port| {
             let wire = Wire::alloc(top.kind()).with(kind::PRINCIPAL);
+            if let Some(level) = top.scope_level() { wire.set_scope_level(level); }
+            if let Some(value) = top.repetition_count() { wire.set_repetition_count(value); }
             if bot.with(port).is_loop() {
-                bot.flip().connect(wire);
+                let temp = Wire::alloc(Kind::Null);
+                bot.with(port).flip().connect(temp.with(kind::null::AUX1));
+                bot.with(port).connect(temp.with(kind::null::AUX2));
+                loops.push(temp);
             }
             wire.increment_scope_level(bot);
             wire
@@ -868,8 +890,13 @@ unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
     let bot_copies: Vec<_> = top_ports.iter()
         .map(|&port| {
             let wire = Wire::alloc(bot.kind()).with(kind::PRINCIPAL);
+            if let Some(level) = bot.scope_level() { wire.set_scope_level(level); }
+            if let Some(value) = bot.repetition_count() { wire.set_repetition_count(value); }
             if top.with(port).is_loop() {
-                top.flip().connect(wire);
+                let temp = Wire::alloc(Kind::Null);
+                top.with(port).flip().connect(temp.with(kind::null::AUX1));
+                top.with(port).connect(temp.with(kind::null::AUX2));
+                loops.push(temp);
             }
             wire.increment_scope_level(top);
             wire
@@ -882,11 +909,19 @@ unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
         wire.connect(other);
     }
 
+    // Fix loops
+    for temp in loops.drain(..) {
+        let start = temp.with(kind::null::AUX1).flip();
+        let end = temp.with(kind::null::AUX2).flip();
+        start.connect(end);
+        temp.delete();
+    }
+
     for (i, top) in top_copies.iter().enumerate() {
         let bot_port = i + 1;
-        for (j, port) in top_ports.iter().enumerate() {
+        for (j, &port) in top_ports.iter().enumerate() {
             let bot = bot_copies[j].with(bot_port);
-            top.with(*port).connect(bot);
+            top.with(port).connect(bot);
         }
     }
 
@@ -897,16 +932,38 @@ unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
 
 unsafe fn annihilate(wire1: Wire, wire2: Wire) {
     let kind = wire1.kind();
-    let iter = kind.auxiliary_ports()
-        .iter()
-        .zip(kind.auxiliary_ports().iter());
-    for (&top, &bot) in iter {
-        let top = wire1.with(top).flip();
-        let bot = wire2.with(bot).flip();
-        top.connect(bot);
+    if kind == Kind::Scope {
+        let value1 = wire1.load(kind::scope::VALUE) + 1;
+        let value2 = wire2.load(kind::scope::VALUE) + 1;
+        match value1.cmp(&value2) {
+            std::cmp::Ordering::Less => {
+                let value2 = value2 - value1 - 1;
+                wire2.store(kind::scope::VALUE, 0, value2 as _);
+                wire2.connect(wire1.with(kind::scope::BODY).flip());
+                wire1.delete();
+            }
+            std::cmp::Ordering::Equal => {
+                wire1.with(kind::scope::BODY).flip()
+                    .connect(wire2.with(kind::scope::BODY).flip());
+                wire1.delete();
+                wire2.delete();
+            }
+            std::cmp::Ordering::Greater => {
+                let value1 = value1 - value2 - 1;
+                wire1.store(kind::scope::VALUE, 0, value1 as _);
+                wire1.connect(wire1.with(kind::scope::BODY).flip());
+                wire2.delete();
+            }
+        }
+    } else {
+        for &port in kind.auxiliary_ports().iter() {
+            let top = wire1.with(port).flip();
+            let bot = wire2.with(port).flip();
+            top.connect(bot);
+        }
+        wire1.delete();
+        wire2.delete();
     }
-    wire1.delete();
-    wire2.delete();
 }
 
 unsafe fn active(wire: Wire) -> Vec<Wire> {
@@ -917,24 +974,23 @@ unsafe fn active(wire: Wire) -> Vec<Wire> {
         let agent = wire.agent();
         if visited.contains(&agent) { continue; }
         visited.insert(agent);
-        if wire.with(kind::PRINCIPAL).active() { active.push(wire); }
-        for p in wire.kind().ports() {
-            let next_wire= wire.with(*p).flip();
+        for &p in wire.kind().ports() {
+            if wire.with(p).active() && wire.alive() { active.push(wire.with(p)); }
+            let next_wire = wire.with(p).flip();
             traversal.push(next_wire);
         }
     }
     active
 }
 
-unsafe fn reduce(wire: Wire, mut gas: Option<usize>) {
-    let mut active = active(wire);
+unsafe fn reduce(mut active: Vec<Wire>, gas: &mut Option<usize>) {
     while let Some(wire) = active.pop() {
         if !wire.active() || !wire.alive() { continue; }
-        if gas.is_some() && gas.unwrap() == 0 { break; }
-        gas = gas.map(|g| g - 1);
-        // dbg!((wire.kind(), wire.agent(), wire.port()));
-        // dbg!((wire.flip().kind(), wire.flip().agent(), wire.flip().port()));
-        // println!("{}", to_dot());
+        if gas.is_some() && (*gas).unwrap() == 0 { break; }
+        *gas = gas.map(|g| g - 1);
+        println!("{}", to_dot(wire, 2));
+        dbg!((wire.kind(), wire.agent(), wire.port()));
+        dbg!((wire.flip().kind(), wire.flip().agent(), wire.flip().port()));
         match (wire.kind(), wire.flip().kind()) {
             | (Kind::Apply, Kind::Lam)
             | (Kind::Lam, Kind::Apply) => { 
@@ -945,17 +1001,16 @@ unsafe fn reduce(wire: Wire, mut gas: Option<usize>) {
                 active.push(scope1);
                 active.push(scope2);
             }
-            (f, g) if f == g => {
-                for p in f.auxiliary_ports() {
-                    active.push(wire.with(*p).flip());
-                }
-                for p in g.auxiliary_ports() {
-                    active.push(wire.flip().with(*p).flip());
-                }
+            (f, g)
+            if f == g
+            && wire.scope_level() == wire.flip().scope_level()
+            => {
                 annihilate(wire, wire.flip());
             }
             | (Kind::Erase, _)
-            | (_, Kind::Erase) => {
+            | (_, Kind::Erase)
+            if wire.port() != kind::PRINCIPAL || wire.flip().port() != kind::PRINCIPAL
+            => {
                 let (eraser, other) =
                     if wire.kind() == Kind::Erase { (wire, wire.flip()) }
                     else { (wire.flip(), wire) };
@@ -971,9 +1026,14 @@ unsafe fn reduce(wire: Wire, mut gas: Option<usize>) {
     }
 }
 
-pub fn normalize(agent: Wire, gas: Option<usize>) -> Wire {
+pub fn normalize(agent: Wire, mut gas: Option<usize>) -> Wire {
     unsafe {
-        reduce(agent, gas);
+        loop {
+            if gas.is_some() && gas.unwrap() == 0 { break; }
+            let active = active(agent);
+            if active.is_empty() { break; }
+            reduce(active, &mut gas);
+        }
         agent
     }
 }
@@ -989,6 +1049,10 @@ pub fn normalize(agent: Wire, gas: Option<usize>) -> Wire {
 //             let var_y = "y".to_string();
 //             let var_z = "z".to_string();
 //             let id_syntax = Syntax::Abs(var_x.clone(), Syntax::Var(var_x.clone()).boxed()).boxed();
+//             let id_id = Syntax::App(
+//                 id_syntax.clone(),
+//                 id_syntax.clone()
+//             ).boxed();
 //             let delta_syntax = Syntax::Abs(var_x.clone(),
 //                 Syntax::App(
 //                     Syntax::Var(var_x.clone()).boxed(),
@@ -1004,12 +1068,23 @@ pub fn normalize(agent: Wire, gas: Option<usize>) -> Wire {
 //                     ).boxed()
 //                 ).boxed()
 //             ).boxed();
-//             let simple_let = Syntax::Let(var_z.clone(), delta_syntax.clone(),
-//                 Syntax::App(
-//                     Syntax::Var(var_z.clone()).boxed(),
-//                     id_syntax.clone()
-//                 ).boxed()
-//             ).boxed();
+//             let simple_let = 
+//                 Syntax::Let("b0".to_string(), id_syntax.clone(),
+//                     Syntax::Let(var_z.clone(),
+//                             Syntax::App(delta_syntax.clone(),
+//                                 Syntax::Var("b0".to_string()).boxed()
+//                             ).boxed(),
+//                         Syntax::Let("b1".to_string(), 
+//                             Syntax::App(delta_syntax.clone(),
+//                                 Syntax::Var(var_z.clone()).boxed()
+//                             ).boxed(),
+//                             Syntax::App(
+//                                 Syntax::Var("b1".to_string()).boxed(),
+//                                 Syntax::Var("b1".to_string()).boxed(),
+//                             ).boxed()
+//                         ).boxed()
+//                     ).boxed()
+//                 ).boxed();
 
 //             let agent = from_syntax(*simple_let);
 //             let agent = normalize(agent, None);

@@ -73,18 +73,13 @@ fn test_input(body: &str) -> common::Syntax {
             {}
         )))))))))))
     "#, body);
-    // let text = format!(r#"
-    //     (let "n1" (abs "s" (abs "z" (app (var . "s") (var . "z"))))
-    //         {}
-    //     )
-    // "#, body);
     from_str(&text).unwrap()
 }
 
 // #[test]
 // fn test_eval_optimal_one() {
 //     use Expr::*;
-//     let e = Const(1);
+//     let e = Mul(Const(1).boxed(), Const(1).boxed());
 //     let value = eval(&e);
 //     let syntax = test_input(to_input(&e).as_str());
 //     println!("{:?}", syntax);
@@ -120,7 +115,7 @@ proptest! {
         let syntax = test_input(to_input(&e).as_str());
         println!("{:?}", syntax);
         let optimal_term = optimal::from_syntax(syntax.clone());
-        let normal = optimal::normalize(optimal_term, Some(100));
+        let normal = optimal::normalize(optimal_term, Some(300));
         let normal_syntax = optimal::to_syntax(normal);
         println!("{:?}", normal_syntax);
         let normal_value = Some(normal_syntax)
