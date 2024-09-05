@@ -5,6 +5,65 @@ use std::collections::{HashSet, HashMap};
 
 use crate::common::*;
 
+fn wire_invariants(w: Wire) {
+    unsafe {
+        let error = to_dot(w, 3);
+        for &port in w.kind().ports() {
+            let wire = w.with(port);
+            assert_eq!(wire, wire.flip().flip(), "{}", error);
+            assert_ne!(wire, wire.flip(), "{}", error);
+        }
+        assert_ne!(w.kind(), Kind::Null, "{}", error);
+        assert!(w.alive(), "{}", error);
+        assert!(w.flip().alive(), "{}", error);
+        match w.kind() {
+            Kind::Null => { },
+            Kind::Root => { },
+            Kind::Lam => {
+                assert_ne!(w.with(kind::lam::BODY).flip(), w.with(kind::lam::ROOT), "{}", error);
+                assert_ne!(w.with(kind::lam::ROOT).flip(), w.with(kind::lam::BODY), "{}", error);
+                assert_ne!(w.with(kind::lam::BIND).flip(), w.with(kind::lam::ROOT), "{}", error);
+                assert_ne!(w.with(kind::lam::ROOT).flip(), w.with(kind::lam::BIND), "{}", error);
+            }
+            Kind::Def => todo!(),
+            Kind::Apply => {
+                assert_ne!(w.with(kind::apply::ARGUMENT).flip(), w.with(kind::apply::ROOT), "{}", error);
+                assert_ne!(w.with(kind::apply::ROOT).flip(), w.with(kind::apply::ARGUMENT), "{}", error);
+                assert_ne!(w.with(kind::apply::FUNCTION).flip(), w.with(kind::apply::ROOT), "{}", error);
+                assert_ne!(w.with(kind::apply::ROOT).flip(), w.with(kind::apply::FUNCTION), "{}", error);
+                assert_ne!(w.with(kind::apply::FUNCTION).flip(), w.with(kind::apply::ARGUMENT), "{}", error);
+                assert_ne!(w.with(kind::apply::ARGUMENT).flip(), w.with(kind::apply::FUNCTION), "{}", error);
+            }
+            Kind::Dup => {
+                assert_ne!(w.with(kind::dup::AUX1).flip(), w.with(kind::dup::INPUT), "{}", error);
+                assert_ne!(w.with(kind::dup::INPUT).flip(), w.with(kind::dup::AUX1), "{}", error);
+                assert_ne!(w.with(kind::dup::AUX2).flip(), w.with(kind::dup::INPUT), "{}", error);
+                assert_ne!(w.with(kind::dup::INPUT).flip(), w.with(kind::dup::AUX2), "{}", error);
+                assert_ne!(w.with(kind::dup::AUX1).flip(), w.with(kind::dup::AUX2), "{}", error);
+                assert_ne!(w.with(kind::dup::AUX2).flip(), w.with(kind::dup::AUX1), "{}", error);
+            }
+            Kind::Scope => {
+                assert_ne!(w.with(kind::scope::BODY).flip(), w.with(kind::scope::INPUT), "{}", error);
+                assert_ne!(w.with(kind::scope::INPUT).flip(), w.with(kind::scope::BODY), "{}", error);
+            }
+            Kind::Erase => { }
+        }
+    }
+}
+
+fn invariants() {
+    unsafe {
+        for idx in heap().iter() {
+            let node = heap().get(idx);
+            let kind: Kind = node.header().into();
+            for &port in kind.ports() {
+                let wire = Wire(node.wire(port));
+                wire_invariants(wire);
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Heap<T> {
     data: Vec<T>,
@@ -45,7 +104,7 @@ impl<T> Heap<T> {
     fn iter(&self) -> HeapIterator<'_, T> {
         HeapIterator {
             heap: self,
-            index: 0
+            index: 1
         }
     }
 }
@@ -76,6 +135,7 @@ static mut HEAP : MaybeUninit<Heap<Node>> = MaybeUninit::uninit();
 
 pub unsafe fn init() {
     HEAP.write(Heap::new());
+    heap().alloc(Node::new_null());
 }
 
 unsafe fn heap() -> &'static mut Heap<Node> {
@@ -420,7 +480,10 @@ impl Wire {
                 let value = match other.kind() {
                     Kind::Lam => 1,
                     Kind::Scope => {
-                        self.load(kind::scope::VALUE) + 1
+                        let i = self.scope_level().unwrap_or_default();
+                        let j = other.scope_level().unwrap();
+                        let value = self.load(kind::scope::VALUE) + 1;
+                        if i >= j { value } else { 0 }
                     }
                     _ => unreachable!()
                 };
@@ -506,7 +569,6 @@ pub fn from_syntax(syntax: Syntax) -> Wire {
         }
     }
     fn inner(syntax: Syntax, root: Wire, bound: &mut Vec<(String, Vec<Wire>)>) -> Wire {
-        dbg!("from_syntax");
         stacker::maybe_grow(32 * KB, 4 * MB, || {
             inner_helper(syntax, root, bound)
         }) 
@@ -569,6 +631,7 @@ pub fn from_syntax(syntax: Syntax) -> Wire {
         let mut bound = vec![];
         let body = inner(syntax, root, &mut bound);
         root.store(kind::root::ROOT, body.port(), body.agent());
+        invariants();
         root
     }
 }
@@ -642,8 +705,11 @@ pub unsafe fn to_dot(start: Wire, length: usize) -> String {
     let mut result = "".to_string();
     let mut duplicate = HashSet::new();
     let mut traverse = vec![(start, 0)];
+    let mut visited = HashSet::new();
     while let Some((wire, dist)) = traverse.pop() {
+        if visited.contains(&wire.agent()) { continue }
         if dist >= length { continue }
+        visited.insert(wire.agent());
         for &port in wire.kind().ports() {
             let other = wire.with(port).flip();
             let lhs = dot_metadata(wire.with(port));
@@ -755,6 +821,7 @@ unsafe fn beta(app: Wire, lam: Wire) -> (Wire, Wire) {
 
     app.delete();
     lam.delete();
+    invariants();
     (var_scope, body_scope)
 }
 
@@ -838,6 +905,7 @@ unsafe fn commute_erase(eraser: Wire, other: Wire) -> Vec<Wire> {
         }
         Kind::Erase => unreachable!()
     }
+    invariants();
     result
 }
 
@@ -851,6 +919,7 @@ unsafe fn commute_root(root: Wire, other: Wire) -> (Vec<Wire>, Vec<Wire>) {
         Kind::Dup => todo!(),
         Kind::Scope => {
             root.connect(other.with(kind::scope::BODY).flip());
+            invariants();
             other.delete();
             (vec![root], vec![])
         }
@@ -927,6 +996,7 @@ unsafe fn commute_general(top: Wire, bot: Wire) -> (Vec<Wire>, Vec<Wire>) {
 
     top.delete();
     bot.delete();
+    invariants();
     (top_copies, bot_copies)
 }
 
@@ -964,6 +1034,7 @@ unsafe fn annihilate(wire1: Wire, wire2: Wire) {
         wire1.delete();
         wire2.delete();
     }
+    invariants();
 }
 
 unsafe fn active(wire: Wire) -> Vec<Wire> {
@@ -988,7 +1059,7 @@ unsafe fn reduce(mut active: Vec<Wire>, gas: &mut Option<usize>) {
         if !wire.active() || !wire.alive() { continue; }
         if gas.is_some() && (*gas).unwrap() == 0 { break; }
         *gas = gas.map(|g| g - 1);
-        println!("{}", to_dot(wire, 2));
+        println!("{}", to_dot(wire, 1000));
         dbg!((wire.kind(), wire.agent(), wire.port()));
         dbg!((wire.flip().kind(), wire.flip().agent(), wire.flip().port()));
         match (wire.kind(), wire.flip().kind()) {

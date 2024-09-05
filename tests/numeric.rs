@@ -73,27 +73,35 @@ fn test_input(body: &str) -> common::Syntax {
             {}
         )))))))))))
     "#, body);
+    let text = format!(r#"
+    (let "mul" (abs "a" (abs "b" (abs "s"
+            (app (var . "a") (app (var . "b") (var . "s")))
+        )))
+    (let "n1" (abs "s" (abs "z" (app (var . "s") (var . "z"))))
+        {}
+))
+"#, body);
     from_str(&text).unwrap()
 }
 
-// #[test]
-// fn test_eval_optimal_one() {
-//     use Expr::*;
-//     let e = Mul(Const(1).boxed(), Const(1).boxed());
-//     let value = eval(&e);
-//     let syntax = test_input(to_input(&e).as_str());
-//     println!("{:?}", syntax);
-//     let optimal_term = optimal::from_syntax(syntax.clone());
-//     unsafe { println!("{}", optimal::to_dot()); }
-//     let normal = optimal::normalize(optimal_term, None);
-//     unsafe { println!("{}", optimal::to_dot()); }
-//     let normal_syntax = optimal::to_syntax(normal);
-//     println!("{:?}", normal_syntax);
-//     let normal_value = Some(normal_syntax)
-//         .and_then(|x| try_discard_lets(&x))
-//         .and_then(|x| try_numeral(&x));
-//     assert_eq!(Some(value), normal_value);
-// }
+#[test]
+fn test_eval_optimal_one() {
+    unsafe { optimal::init(); }
+    use Expr::*;
+    let e = Mul(Const(1).boxed(), Const(1).boxed());
+    let value = eval(&e);
+    let syntax = test_input(to_input(&e).as_str());
+    println!("{:?}", syntax);
+    let optimal_term = optimal::from_syntax(syntax.clone());
+    let normal = optimal::normalize(optimal_term, Some(20));
+    unsafe { println!("{}", optimal::to_dot(normal, 1000)) }
+    // let normal_syntax = optimal::to_syntax(normal);
+    // println!("{:?}", normal_syntax);
+    // let normal_value = Some(normal_syntax)
+    //     .and_then(|x| try_discard_lets(&x))
+    //     .and_then(|x| try_numeral(&x));
+    // assert_eq!(Some(value), normal_value);
+}
 
 proptest! {
     // #[test]
@@ -109,18 +117,18 @@ proptest! {
     //     assert_eq!(Some(value), normal_value);
     // }
 
-    #[test]
-    fn test_eval_optimal(e in expr_strategy()) {
-        let value = eval(&e);
-        let syntax = test_input(to_input(&e).as_str());
-        println!("{:?}", syntax);
-        let optimal_term = optimal::from_syntax(syntax.clone());
-        let normal = optimal::normalize(optimal_term, Some(300));
-        let normal_syntax = optimal::to_syntax(normal);
-        println!("{:?}", normal_syntax);
-        let normal_value = Some(normal_syntax)
-            .and_then(|x| try_discard_lets(&x))
-            .and_then(|x| try_numeral(&x));
-        assert_eq!(Some(value), normal_value);
-    }
+    // #[test]
+    // fn test_eval_optimal(e in expr_strategy()) {
+    //     let value = eval(&e);
+    //     let syntax = test_input(to_input(&e).as_str());
+    //     println!("{:?}", syntax);
+    //     let optimal_term = optimal::from_syntax(syntax.clone());
+    //     let normal = optimal::normalize(optimal_term, Some(300));
+    //     let normal_syntax = optimal::to_syntax(normal);
+    //     println!("{:?}", normal_syntax);
+    //     let normal_value = Some(normal_syntax)
+    //         .and_then(|x| try_discard_lets(&x))
+    //         .and_then(|x| try_numeral(&x));
+    //     assert_eq!(Some(value), normal_value);
+    // }
 }

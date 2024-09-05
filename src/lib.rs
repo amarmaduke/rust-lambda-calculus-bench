@@ -10,3 +10,4 @@ pub mod nogc;
 pub mod slotmap;
 pub mod moving_gc_arena;
 pub mod optimal;
+pub mod gc;
